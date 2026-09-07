@@ -1,0 +1,11 @@
+.venv/
+dist/
+build_pyi/
+配布/
+__pycache__/
+*.pyc
+*.bak-*
+.DS_Store
+icon/_没案/
+icon/koetype.iconset/
+icon/*.html
