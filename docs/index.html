@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>こえタイプ｜押して喋るだけで、整った文章が入る</title>
+<meta name="description" content="fnキーを押して喋ると、AIが清書した文章がカーソル位置に入るMac用の音声入力ツール。おとラボ受講生向けに無料で配布しています。">
+<link rel="icon" href="img/icon-128.png">
+<style>
+:root{
+  --coral:#F4586E; --coral-dark:#DC4459; --ivory:#FFF6F2; --ink:#332E2C;
+  --blue:#2F7BF6; --blue-soft:#EAF1FE; --gray:#6B6360; --line:#EFE3DE;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  color:var(--ink);background:#fff;line-height:1.85;-webkit-font-smoothing:antialiased}
+img{max-width:100%}
+.wrap{max-width:760px;margin:0 auto;padding:0 22px}
+h2{font-size:1.45rem;margin:0 0 8px;letter-spacing:.02em}
+h3{font-size:1.08rem;margin:26px 0 8px}
+p{margin:.6em 0}
+section{padding:52px 0;border-top:1px solid var(--line)}
+section:first-of-type{border-top:none}
+.lead{color:var(--gray);margin-bottom:26px}
+code{background:var(--ivory);padding:2px 7px;border-radius:6px;font-size:.92em;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ヒーロー */
+.hero{background:var(--ivory);padding:64px 0 58px;text-align:center}
+.hero img{width:118px;border-radius:26px;box-shadow:0 8px 26px rgba(244,88,110,.18)}
+.hero h1{font-size:2.1rem;margin:20px 0 6px;letter-spacing:.03em}
+.hero .sub{font-size:1.12rem;color:var(--ink);margin:0 0 6px;font-weight:600}
+.hero .env{color:var(--gray);font-size:.88rem;margin-top:20px}
+.badge{display:inline-block;background:#fff;border:1px solid var(--line);
+  border-radius:999px;padding:5px 15px;font-size:.83rem;margin:4px 3px;color:var(--gray)}
+.badge.free{background:var(--coral);color:#fff;border-color:var(--coral);font-weight:700}
+
+/* 導入CTA */
+.cta{background:#fff;border:2px solid var(--coral);border-radius:20px;padding:26px 24px;margin:8px 0 4px}
+.cta .say{background:var(--ivory);border-radius:14px;padding:18px 20px;margin:14px 0 6px;
+  font-size:1.18rem;font-weight:700;text-align:center}
+.cta .note{color:var(--gray);font-size:.88rem;margin:10px 0 0}
+
+/* できること */
+.cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:20px}
+.card{background:var(--ivory);border-radius:16px;padding:20px 18px}
+.card b{display:block;margin-bottom:6px;font-size:1rem}
+.card span{font-size:.9rem;color:var(--gray);line-height:1.7}
+@media(max-width:640px){.cards{grid-template-columns:1fr}}
+
+/* 手順 */
+.steps{counter-reset:s;margin:18px 0 0;padding:0;list-style:none}
+.steps li{counter-increment:s;position:relative;padding:0 0 20px 46px;margin:0}
+.steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:30px;height:30px;
+  background:var(--coral);color:#fff;border-radius:50%;display:grid;place-items:center;
+  font-weight:700;font-size:.95rem}
+.steps li b{display:block}
+.steps li span{color:var(--gray);font-size:.92rem}
+
+/* 設定画面の図解（実物のスクショではなく再現図） */
+.mock{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:14px 0;background:#fff}
+.mock .bar{background:#F5F2F0;padding:9px 14px;font-size:.85rem;color:var(--gray);
+  border-bottom:1px solid var(--line)}
+.mock .row{display:flex;align-items:center;justify-content:space-between;
+  padding:12px 16px;border-bottom:1px solid #F6F0ED}
+.mock .row:last-child{border-bottom:none}
+.mock .row.target{background:#FFF9F7}
+.mock .app{display:flex;align-items:center;gap:10px;font-size:.95rem}
+.mock .app img{width:22px;border-radius:5px}
+.mock .dot{width:22px;height:22px;border-radius:6px;background:#E6E0DD}
+.sw{width:42px;height:25px;border-radius:999px;background:#DCD6D3;position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:19px;height:19px;
+  border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.sw.on{background:var(--coral)}
+.sw.on::after{left:20px}
+.mock .caption{padding:10px 16px;font-size:.83rem;color:var(--gray);background:#FCFAF9}
+
+/* 表示の見え方 */
+.pill-demo{display:flex;gap:14px;flex-wrap:wrap;margin:16px 0}
+.pill{display:flex;align-items:center;gap:10px;background:var(--ivory);
+  border-radius:999px;padding:10px 20px 10px 12px;font-weight:700;font-size:.95rem;
+  box-shadow:0 3px 10px rgba(0,0,0,.07)}
+.pill img{width:32px}
+
+/* 注意・補足 */
+.warn{background:#FFF4F5;border-left:4px solid var(--coral);border-radius:0 12px 12px 0;
+  padding:16px 20px;margin:18px 0}
+.warn b{color:var(--coral-dark)}
+.info{background:var(--blue-soft);border-left:4px solid var(--blue);border-radius:0 12px 12px 0;
+  padding:16px 20px;margin:18px 0}
+.info b{color:var(--blue)}
+
+/* FAQ */
+details{border-bottom:1px solid var(--line);padding:14px 0}
+summary{cursor:pointer;font-weight:700;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"＋";color:var(--coral);font-weight:700;margin-right:10px}
+details[open] summary::before{content:"−"}
+details p{color:var(--gray);font-size:.93rem;margin:10px 0 0 26px}
+
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:.92rem}
+th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}
+th{background:var(--ivory);font-weight:700;white-space:nowrap}
+
+footer{background:var(--ivory);padding:40px 0;text-align:center;color:var(--gray);font-size:.85rem}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="wrap">
+    <img src="img/icon-512.png" alt="こえタイプ">
+    <h1>こえタイプ</h1>
+    <p class="sub">押して、喋って、離すだけ。</p>
+    <p style="color:var(--gray);margin:0">AIが整えた文章が、そのままカーソル位置に入ります。</p>
+    <div class="env">
+      <span class="badge free">無料</span>
+      <span class="badge">macOS 13 以降</span>
+      <span class="badge">Apple Silicon</span>
+      <span class="badge">おとラボ受講生向け</span>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<section>
+  <h2>入れ方</h2>
+  <p class="lead">ダウンロードもインストーラーも要りません。Claude Code に一言お願いするだけです。</p>
+  <div class="cta">
+    <div class="say">「こえタイプを入れて」</div>
+    <p class="note">Claude デスクトップアプリの <b>Code タブ</b> に貼り付けてください。<br>
+      アプリの取得から設定まで、最後まで付き添って進めてくれます。所要 10 分ほどです。</p>
+  </div>
+  <div class="info">
+    <b>セキュリティの警告は出ません。</b>
+    ブラウザではなくコマンド経由で取得するため、「開発元を検証できません」の画面は表示されません。
+  </div>
+</section>
+
+<section>
+  <h2>できること</h2>
+  <div class="cards">
+    <div class="card"><b>話し言葉が消える</b><span>「えーと」「あのー」が消えて、そのまま送れる文章になります。</span></div>
+    <div class="card"><b>言葉を覚える</b><span>一度直した表記は次から間違えません。人名・商品名の登録に。</span></div>
+    <div class="card"><b>長くても平気</b><span>10分喋っても10秒ほどで文字になります。上限は30分。</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>使い方</h2>
+  <ol class="steps">
+    <li><b>文字を入れたい場所をクリック</b><span>メモ、メール、Instagramの投稿欄など、どこでも構いません。</span></li>
+    <li><b>fnキーを1回押して、「ポン」と鳴ってから喋る</b><span>fnはキーボードの左下の角、🌐マークのキーです。</span></li>
+    <li><b>もう一度fnキーを押す</b><span>数秒後、整えられた文章がカーソル位置に入ります。</span></li>
+  </ol>
+  <div class="warn">
+    <b>「ポン」と鳴ってから喋ってください。</b>
+    押した直後はまだマイクが開いておらず、話し始めの言葉が切れてしまいます。
+  </div>
+  <h3>今どうなっているかは、画面の下に出ます</h3>
+  <div class="pill-demo">
+    <div class="pill"><img src="img/icon-128.png" alt="">録音中</div>
+    <div class="pill"><img src="img/icon-blue.png" alt="">整え中</div>
+  </div>
+  <p style="color:var(--gray);font-size:.9rem;margin-top:4px">
+    点滅している間は動いています。消えたら貼り付け完了です。</p>
+</section>
+
+<section>
+  <h2>最初の1回だけ必要なこと</h2>
+  <p class="lead">Claude Code が画面を開いて案内してくれます。ここでは何をするのかだけ先にお伝えします。</p>
+
+  <h3>① Macの許可を3つ</h3>
+  <p>それぞれ役割が違い、3つとも必要です。</p>
+  <div class="mock">
+    <div class="bar">システム設定 → プライバシーとセキュリティ → マイク</div>
+    <div class="row"><div class="app"><div class="dot"></div>ほかのアプリ</div><div class="sw"></div></div>
+    <div class="row target"><div class="app"><img src="img/icon-128.png" alt="">こえタイプ</div><div class="sw on"></div></div>
+    <div class="caption">この形の画面が3回出ます。「こえタイプ」の右側をオンにしてください。</div>
+  </div>
+  <table>
+    <tr><th>許可</th><th>これが無いと</th></tr>
+    <tr><td>マイク</td><td>録音しても無音になります</td></tr>
+    <tr><td>入力監視</td><td>fnキーを押しても何も起きません</td></tr>
+    <tr><td>アクセシビリティ</td><td>文章はできるのに貼り付きません</td></tr>
+  </table>
+
+  <h3>② GeminiのAPIキー</h3>
+  <p>文字起こしと清書は Google の Gemini が行います。<b>無料の範囲で足ります。</b></p>
+  <ol class="steps">
+    <li><b>aistudio.google.com/apikey を開く</b><span>Googleアカウントでログインします。</span></li>
+    <li><b>「API キーを作成」を押す</b></li>
+    <li><b>「＋ プロジェクトを作成」を選ぶ</b><span>ここが最重要です。下の注意をお読みください。</span></li>
+    <li><b>出てきたキーをコピーして貼る</b><span>Claude Code が本当に使えるキーか確かめてから保存します。</span></li>
+  </ol>
+  <div class="warn">
+    <b>すでにあるプロジェクトを選ばないでください。</b>
+    支払い情報が紐づいたプロジェクトを選ぶと無料枠が使えず、動きません。
+    しかも見た目ではキーが作れたように見えるため気づけません。
+    <b>必ず「＋ プロジェクトを作成」</b>を選んでください。
+  </div>
+</section>
+
+<section>
+  <h2>お金と安心のこと</h2>
+  <table>
+    <tr><th>アプリ</th><td>無料です。受講生の方はご自由にお使いください。</td></tr>
+    <tr><th>Gemini</th><td>無料枠で足ります。<b>1日500回</b>まで使えます。長さではなく回数で数えるので、10分喋っても1回です。</td></tr>
+    <tr><th>勝手に課金されないか</th><td>されません。支払い情報を登録していないため、枠を使い切ってもエラーになるだけです。</td></tr>
+    <tr><th>音声はどこへ</th><td>Google の Gemini にだけ送られます。作者のサーバーは通りません。</td></tr>
+    <tr><th>設定の保存先</th><td>ご自身のMacの中だけです。APIキーも外部には送られません。</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>うまくいかないとき</h2>
+  <p class="lead">Claude Code に「こえタイプが動かない」と言えば、記録を読んで原因を調べてくれます。</p>
+  <details><summary>fnキーを押しても何も起きない</summary>
+    <p>「入力監視」の許可が入っていない可能性が高いです。Claude Code に「こえタイプが動かない」と伝えてください。設定画面を開いて確認してくれます。</p></details>
+  <details><summary>喋ったのに文字が入らない</summary>
+    <p>マイクが別のものになっていることがあります。メニューバーのこえタイプのアイコンを押し、「マイク」から選び直してください。AirPodsをお使いの場合は本体のマイクに切り替えると安定します。</p></details>
+  <details><summary>AirPodsだと声が入らない</summary>
+    <p>AirPodsはマイクを使う瞬間に通話モードへ切り替わる仕組みで、そのとき音が途切れたり拾えなかったりします。メニューから「MacBook〜のマイク」を選んでください。AirPodsは音を聴く方に使えます。</p></details>
+  <details><summary>話し始めの言葉が切れる</summary>
+    <p>「ポン」と鳴ってから喋ってください。押した直後の0.3秒ほどはまだマイクが開いていません。</p></details>
+  <details><summary>「無料枠を使い切りました」と出た</summary>
+    <p>翌日また使えます。キーに問題はありません。別のモデルへ自動で切り替わるので、続けて使えることも多いです。</p></details>
+  <details><summary>固有名詞がいつも間違って変換される</summary>
+    <p>メニューバーのアイコン →「言葉を覚えさせる…」に、1行1件で <code>まちがい、正しい表記</code> と書いて保存してください。区切りは読点でかまいません。次からは必ず正しくなります。</p></details>
+  <details><summary>WindowsやIntel Macでも使えますか</summary>
+    <p>現時点では使えません。Apple Silicon（M1以降）のMac専用です。Windows版は準備中です。</p></details>
+</section>
+
+<section>
+  <h2>中身を見たい・変えたい方へ</h2>
+  <p>ソースコードは公開しています。ご自身のClaude Codeに「この中身を解説して」「ここを変えて」と伝えれば、自分好みに作り替えられます。</p>
+  <p><a href="https://github.com/izzzenk-ops/koetype" style="color:var(--coral);font-weight:700">github.com/izzzenk-ops/koetype</a></p>
+</section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <img src="img/icon-128.png" alt="" style="width:44px;border-radius:11px">
+    <p>こえタイプ — おとラボ受講生向け<br>
+    うまくいかないときは Discord でお知らせください。</p>
+  </div>
+</footer>
+
+</body>
+</html>
