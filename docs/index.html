@@ -144,6 +144,7 @@ footer{background:var(--ivory);padding:40px 0;text-align:center;color:var(--gray
     <div class="card"><b>話し言葉が消える</b><span>「えーと」「あのー」が消えて、そのまま送れる文章になります。</span></div>
     <div class="card"><b>言葉を覚える</b><span>一度直した表記は次から間違えません。人名・商品名の登録に。</span></div>
     <div class="card"><b>長くても平気</b><span>10分喋っても10秒ほどで文字になります。上限は30分。</span></div>
+    <div class="card"><b>直前の3件が残る</b><span>メニューの「結果をコピー」に直前3件が本文つきで並びます。選べばその全文がコピーできます。</span></div>
   </div>
 </section>
 
@@ -210,6 +211,7 @@ footer{background:var(--ivory);padding:40px 0;text-align:center;color:var(--gray
     <tr><th>勝手に課金されないか</th><td>されません。支払い情報を登録していないため、枠を使い切ってもエラーになるだけです。</td></tr>
     <tr><th>音声はどこへ</th><td>Google の Gemini にだけ送られます。作者のサーバーは通りません。</td></tr>
     <tr><th>設定の保存先</th><td>ご自身のMacの中だけです。APIキーも外部には送られません。</td></tr>
+    <tr><th>喋った内容の扱い</th><td><b>無料枠で使う場合、送った音声と文章はGoogleの製品改善（AIの学習を含む）に使われることがあり、担当者が読むことがあります。</b>Googleの規約に「機密情報・個人情報を無料のサービスに送らないでください」と書かれています。お客様の氏名・連絡先や、外に出せない話は喋らないでください。<br>（有料で使う場合は学習に使われません。無料枠のままで足りるので、ふだんは無料のままで構いません）</td></tr>
   </table>
 </section>
 
@@ -225,7 +227,7 @@ footer{background:var(--ivory);padding:40px 0;text-align:center;color:var(--gray
   <details><summary>話し始めの言葉が切れる</summary>
     <p>「ポン」と鳴ってから喋ってください。押した直後の0.3秒ほどはまだマイクが開いていません。</p></details>
   <details><summary>「無料枠を使い切りました」と出た</summary>
-    <p>翌日また使えます。キーに問題はありません。別のモデルへ自動で切り替わるので、続けて使えることも多いです。</p></details>
+    <p>枠が戻るのは<b>日本時間の夕方（16〜17時ごろ）</b>です。翌朝ではありません（Googleは太平洋時間の0時にリセットするため）。キーに問題はありません。別のモデルへ自動で切り替わるので、それまでも続けて使えることが多いです。</p></details>
   <details><summary>固有名詞がいつも間違って変換される</summary>
     <p>メニューバーのアイコン →「言葉を覚えさせる…」に、1行1件で <code>まちがい、正しい表記</code> と書いて保存してください。区切りは読点でかまいません。次からは必ず正しくなります。</p></details>
   <details><summary>WindowsやIntel Macでも使えますか</summary>

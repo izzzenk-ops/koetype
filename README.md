@@ -105,8 +105,8 @@ AIが指示に従わなくても②で確実に直るので、一度覚えさせ
 |---|---|
 | `provider` | `auto`（既定）／`gemini`／`openai`。autoはGeminiキーがあればGemini、無ければOpenAI |
 | `gemini_api_key` | AI Studioの無料キー。**請求先に紐づいたプロジェクトで作ると前払いクレジット扱いになり429で弾かれる**。請求先なしの新規プロジェクトで作ること |
-| `gemini_model` | `gemini-3.1-flash-lite`（既定） |
-| `gemini_fallback_models` | 枠が尽きたときに順に試すモデル。**無料枠はモデルごとに別**なので、これで使える回数が増える |
+| `gemini_model` | `gemini-3.1-flash-lite`（既定）。**2026-05-07に廃止告知済み・最短2027-05-07で停止**。後継は `gemini-3.5-flash-lite` |
+| `gemini_fallback_models` | 枠が尽きたときに順に試すモデル。**無料枠はモデルごとに別**なので、これで使える回数が増える。**モデルは停止する**ので足す前に廃止予定表で存在を確かめる（ https://ai.google.dev/gemini-api/docs/deprecations ）。`gemini-3.1-flash-lite-preview` は2026-05-25に停止済みで、予備に入れていたため2026-09-10に外した |
 | `corrections` | 覚えさせた表記。メニューの「言葉を覚えさせる…」から編集する |
 | `hold_key_code` | 押しっぱなしにするキー。63=fn（既定）／61=右Option／58=左Option／54=右Command |
 | `vocabulary` | よく使う固有名詞。誤変換が出た語をここに足すと直る（例:「ロウリュウ」） |
@@ -253,6 +253,10 @@ tccutil reset Microphone com.otolab.koetype
 - 清書は「フィラーを消す・言い直しを統合する・誤変換を直す」だけ。内容を足さない・要約しない
 - 貼り付けはクリップボード経由。元のクリップボードは0.6秒後に戻す
 - 音声もテキストも端末とAPI提供元の間だけで、他所のサーバーは通らない
+- **ただしGeminiの無料枠は「学習に使われる枠」。** 公式規約（ https://ai.google.dev/gemini-api/terms ）に、
+  無料枠（Unpaid Services）で送った内容は製品改善・機械学習に使われ、人間のレビュアーが読むことがあると明記。
+  Google自身が「機微情報・秘密情報・個人情報を無料枠に送るな」と書いている。有料枠は学習に使われない。
+  **配布資料には必ずこの事実を書くこと**（受講生は顧客名や未公開の企画を喋る可能性がある）
 
 
 ## 受講生への配布（2026-09-07）

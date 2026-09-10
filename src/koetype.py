@@ -93,9 +93,11 @@ DEFAULT_CONFIG = {
     "provider": "auto",
     "gemini_api_key": "",
     "gemini_model": "gemini-3.1-flash-lite",
-    # 無料枠はモデルごとに別。尽きたら順に回して使える回数を増やす
+    # 無料枠はモデルごとに別。尽きたら順に回して使える回数を増やす。
+    # モデルは廃止される。公式の廃止予定表で存在を確かめてから足すこと:
+    # https://ai.google.dev/gemini-api/docs/deprecations
     "gemini_fallback_models": [
-        "gemini-3.1-flash-lite-preview",
+        "gemini-3.5-flash-lite",     # 既定(3.1)の後継。3.1は2027-05-07に停止予定
         "gemini-3-flash-preview",
         "gemini-flash-latest",
     ],
