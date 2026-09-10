@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import wave
 from pathlib import Path
 
@@ -31,8 +32,10 @@ import Quartz
 from AppKit import (NSPasteboard, NSStringPboardType, NSPanel, NSView, NSColor,
                     NSImage, NSImageView, NSTextField, NSFont, NSScreen, NSMakeRect,
                     NSBackingStoreBuffered, NSAlert, NSTextView, NSScrollView,
-                    NSApplication, NSEventModifierFlagShift)
-from Foundation import NSObject, NSURL
+                    NSApplication, NSEventModifierFlagShift,
+                    NSMutableParagraphStyle, NSFontAttributeName,
+                    NSForegroundColorAttributeName, NSParagraphStyleAttributeName)
+from Foundation import NSObject, NSURL, NSMutableAttributedString
 import objc
 from PyObjCTools import AppHelper
 
@@ -40,6 +43,10 @@ APP_NAME = "こえタイプ"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "KoeType"
 CONFIG_PATH = SUPPORT_DIR / "config.json"
 LOG_PATH = SUPPORT_DIR / "koetype.log"
+HISTORY_PATH = SUPPORT_DIR / "history.json"
+HISTORY_MAX = 3      # メニューに残す直前の結果の数
+PREVIEW_COLS = 30    # メニューの1行に入れる文字数（全角で数えたときの目安）
+PREVIEW_LINES = 5    # 1件あたり何行まで見せるか
 
 # 清書の指示。内容は足さない・要約しない、が絶対条件。
 POLISH_PROMPT = """あなたは日本語の音声入力を清書する校正者です。
@@ -130,6 +137,55 @@ def log(msg):
         pass
     with open(LOG_PATH, "a") as f:
         f.write(line + "\n")
+
+
+def load_history():
+    """直前の結果を読み込む。アプリを閉じても消えないようにしてある。"""
+    try:
+        if HISTORY_PATH.exists():
+            items = json.loads(HISTORY_PATH.read_text())
+            return [i for i in items if isinstance(i, dict) and i.get("text")][:HISTORY_MAX]
+    except Exception as e:
+        log(f"履歴を読めませんでした: {e}")
+    return []
+
+
+def save_history(items):
+    """本人しか読めない権限で保存する（喋った内容が入るため）。"""
+    try:
+        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = HISTORY_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(items[:HISTORY_MAX], ensure_ascii=False, indent=2))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, HISTORY_PATH)
+    except Exception as e:
+        log(f"履歴を保存できませんでした: {e}")
+
+
+# 行の頭に来ると読みにくい記号。前の行の末尾に付けて逃がす
+NO_LINE_HEAD = "、。，．」』）】〉…！？!?ゝ々ー"
+
+
+def wrap_preview(text, cols=PREVIEW_COLS, lines=PREVIEW_LINES):
+    """メニューに収まる幅で本文を折り返す。全角は2、半角は1として数える。"""
+    flat = " ".join(text.split())
+    limit = cols * 2
+    out, cur, width = [], "", 0
+    for ch in flat:
+        w = 2 if unicodedata.east_asian_width(ch) in "WFA" else 1
+        if width + w > limit:
+            if ch in NO_LINE_HEAD:       # 句読点だけが次の行に落ちるのを防ぐ
+                cur += ch
+                continue
+            out.append(cur)
+            if len(out) == lines:
+                return out[:-1] + [out[-1][:-1] + "…"]
+            cur, width = "", 0
+        cur += ch
+        width += w
+    if cur:
+        out.append(cur)
+    return out or [""]
 
 
 def sweep_temp_files():
@@ -889,18 +945,22 @@ class KoeTypeApp(rumps.App):
         self.retry_item = self._info("やり直せる録音はありません")
         self.pending = None
         self.mic_menu = rumps.MenuItem("マイク: 確認中…")
+        self.copy_menu = rumps.MenuItem("結果をコピー")
+        self.history = load_history()
         self.menu = [
             self.status_item,
             self.last_item,
             None,
             self.mic_menu,
-            rumps.MenuItem("直前の結果をコピー", callback=self.copy_last),
+            self.copy_menu,
             rumps.MenuItem("言葉を覚えさせる…", callback=self.edit_corrections),
             self.retry_item,
             None,
             rumps.MenuItem("終了", callback=rumps.quit_application),
         ]
         self.known_devices = None
+        self._history_built = False
+        self._rebuild_copy_menu()
         self._refresh_mic(None)
         self.status_timer = rumps.Timer(self._refresh_mic, 3)
         self.status_timer.start()
@@ -1136,6 +1196,7 @@ class KoeTypeApp(rumps.App):
             elapsed = time.time() - started
             if text:
                 self.last_text = text
+                self._remember(text)
                 paste_text(text)
                 if self.cfg["sound_on_done"]:
                     beep("Tink")
@@ -1236,6 +1297,70 @@ class KoeTypeApp(rumps.App):
         self.pending = None
         self.retry_item.set_callback(None)
         self.retry_item.title = "やり直せる録音はありません"
+
+    def _remember(self, text):
+        """新しい結果を履歴の先頭に足して、メニューを作り直す。"""
+        item = {"time": time.strftime("%H:%M"), "text": text}
+        self.history = [item] + [h for h in self.history if h.get("text") != text]
+        self.history = self.history[:HISTORY_MAX]
+        save_history(self.history)
+        AppHelper.callAfter(self._rebuild_copy_menu)
+
+    def _rebuild_copy_menu(self):
+        """コピー用のサブメニューを作り直す。中身が読めるように本文を並べる。"""
+        if self._history_built:
+            self.copy_menu.clear()   # 初回は中身が無く clear できない
+        self._history_built = True
+
+        if not self.history:
+            empty = rumps.MenuItem("まだ結果がありません")
+            empty.set_callback(None)
+            self.copy_menu.add(empty)
+            self.copy_menu.title = "結果をコピー"
+            return
+
+        for i, h in enumerate(self.history):
+            text = h.get("text", "")
+            # 見出しは中身が重なっても別項目として扱われるよう番号を入れておく
+            item = rumps.MenuItem(f"{i + 1}. {h.get('time', '')}",
+                                  callback=self._copy_from_history)
+            item.history_index = i
+            self._show_preview(item, h.get("time", ""), text)
+            self.copy_menu.add(item)
+        self.copy_menu.title = f"結果をコピー（{len(self.history)}件）"
+
+    def _show_preview(self, item, when, text):
+        """本文を折り返して、複数行のまま項目に表示する。"""
+        lines = wrap_preview(text)
+        head = f"{when}  {len(text)}文字\n"
+        body = "\n".join(lines)
+
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setLineSpacing_(1.0)
+        attr = NSMutableAttributedString.alloc().initWithString_(head + body)
+        attr.addAttribute_value_range_(NSParagraphStyleAttributeName, para,
+                                       (0, attr.length()))
+        attr.addAttribute_value_range_(NSFontAttributeName,
+                                       NSFont.systemFontOfSize_(13.0),
+                                       (0, attr.length()))
+        # 時刻と文字数は控えめに、本文は読みやすい大きさで
+        attr.addAttribute_value_range_(NSFontAttributeName,
+                                       NSFont.systemFontOfSize_(10.5), (0, len(head)))
+        attr.addAttribute_value_range_(NSForegroundColorAttributeName,
+                                       NSColor.secondaryLabelColor(), (0, len(head)))
+        item._menuitem.setAttributedTitle_(attr)
+        item._menuitem.setToolTip_(text)   # 全文はマウスを乗せると出る
+
+    def _copy_from_history(self, sender):
+        i = getattr(sender, "history_index", None)
+        if i is None or i >= len(self.history):
+            return
+        text = self.history[i]["text"]
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSStringPboardType)
+        log(f"履歴{i + 1}件目をコピーしました（{len(text)}文字）")
+        self._set(self.last_item, f"直前: {len(text)}文字をコピーしました")
 
     def copy_last(self, _):
         if not self.last_text:
