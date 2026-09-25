@@ -33,7 +33,7 @@ app = BUNDLE(
     name="こえタイプ.app",
     icon="icon/koetype.icns",
     bundle_identifier="com.otolab.koetype",
-    version="1.0.0",
+    version="1.2.0",   # 上げ忘れると受講生が新旧を見分けられない
     info_plist={
         "CFBundleName": "こえタイプ",
         "CFBundleDisplayName": "こえタイプ",
