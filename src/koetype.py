@@ -111,8 +111,10 @@ DEFAULT_CONFIG = {
     ),
     "openai_transcribe_model": "gpt-4o-mini-transcribe",
     "openai_polish_model": "gpt-4.1-nano",
-    "hold_key_code": 61,  # 61=右Option, 58=左Option, 63=fn, 54=右Command
-    "hold_key_name": "右Option",
+    # 導入スキル・ガイド・告知はすべて「fn（地球儀）」で案内している。
+    # ここを変えると、入れたばかりの人が最初の一押しで必ず詰まる。
+    "hold_key_code": 63,  # 63=fn, 61=右Option, 58=左Option, 54=右Command
+    "hold_key_name": "fn（地球儀）",
     "audio_device": "auto",
     "min_seconds": 0.4,
     "max_seconds": 1800,   # 30分
