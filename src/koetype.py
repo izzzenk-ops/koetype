@@ -12,9 +12,11 @@
 
 import array
 import base64
+import ctypes
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,7 +34,7 @@ import Quartz
 from AppKit import (NSPasteboard, NSStringPboardType, NSPanel, NSView, NSColor,
                     NSImage, NSImageView, NSTextField, NSFont, NSScreen, NSMakeRect,
                     NSBackingStoreBuffered, NSAlert, NSTextView, NSScrollView,
-                    NSApplication, NSEventModifierFlagShift,
+                    NSApplication, NSEventModifierFlagShift, NSWorkspace,
                     NSMutableParagraphStyle, NSFontAttributeName,
                     NSForegroundColorAttributeName, NSParagraphStyleAttributeName)
 from Foundation import NSObject, NSURL, NSMutableAttributedString
@@ -53,7 +55,10 @@ POLISH_PROMPT = """あなたは日本語の音声入力を清書する校正者�
 渡された音声を文字起こしし、読みやすい書き言葉に整えてください。
 
 やること:
-- 「えー」「あのー」「えっと」「まあ」などのフィラーを消す
+- フィラー（意味を持たないつなぎ言葉）を1つ残らず消す。
+  「えー」「えっと」「あのー」「まあ」「ま、」「うーん」「うん」「その」「なんか」
+  「はい」など、相づちや口ぐせは、文の途中でも文頭でも末尾でも必ず落とす。
+  音声が長くても最後まで同じように消すこと。
 - 言い直し・言い淀みは、最終的に言いたかった形に統合する
 - 音声認識の誤変換、明らかな言い間違いを直す
 - 句読点を打ち、読みやすい長さで文を切る
@@ -114,6 +119,8 @@ DEFAULT_CONFIG = {
     "sound_feedback": True,    # 録音が始まった合図（マイクが開いた瞬間のポッ）
     "sound_on_done": False,    # 貼り付け終わりの音。うるさいので既定は鳴らさない
     "debug_keys": False,
+    # 「えっと」「ま、」などのつなぎ言葉を、AIの清書のあとで必ず落とす
+    "remove_fillers": True,
     # 直した表記を覚えさせる表。「間違い」→「正しい」
     "corrections": {
         "ぽちぺた": "ぽちペタ",
@@ -419,6 +426,56 @@ def drop_hallucination(text):
     return "" if text.strip() in HALLUCINATIONS else text
 
 
+# 清書AIはたいていフィラーを消してくれるが、長い音声では素通しすることがある
+# （実測 2026-09-25: 2分6秒・662文字に「えっと」「ま、」「うん」が大量に残った）。
+# 表記直し（apply_corrections）と同じ考えで、AIの気まぐれに任せず最後に必ず通す。
+DEFAULT_FILLERS = [
+    "え", "えっ", "えー", "えと", "えっと", "えーっと", "ええと", "えっとー",
+    "あの", "あのー", "あのう", "あー",
+    "ま", "まあ", "まぁ", "まー",
+    "うん", "うんうん", "うーん", "うーむ", "ふーん",
+    "その", "そのー",
+    "なんか", "なんていうか", "なんて言うか", "なんというか",
+    "はい", "ええ", "そうですね", "なるほど",
+]
+# 「、」「。」「改行」で区切られた“かたまり”だけを見る。文の途中の語は触らない。
+_CHUNK = re.compile(r"([、。！？\n])")
+_TAIL_DASH = re.compile(r"[ー〜～]+$")
+
+
+def strip_fillers(text, cfg):
+    """「えっと」だけで1区切りになっている部分を、区切り記号ごと落とす。
+    文の途中に埋まっている語は触らないので、意味のある「まあ」「はい」は残る。"""
+    if not text or not cfg.get("remove_fillers", True):
+        return text
+    words = {w.strip() for w in (cfg.get("filler_words") or DEFAULT_FILLERS) if w.strip()}
+    words |= {w.strip() for w in (cfg.get("extra_fillers") or []) if w.strip()}
+    if not words:
+        return text
+
+    parts = _CHUNK.split(text)
+    kept, removed = [], []
+    for i in range(0, len(parts), 2):
+        chunk = parts[i]
+        sep = parts[i + 1] if i + 1 < len(parts) else ""
+        core = chunk.strip(" \u3000")
+        if core and (core in words or _TAIL_DASH.sub("", core) in words):
+            removed.append(core)
+            # 改行は段落の区切りなので残す。「、」「。」は語と一緒に捨てる
+            if sep == "\n":
+                kept.append(sep)
+            continue
+        kept.append(chunk + sep)
+
+    result = "".join(kept).strip()
+    if not result:
+        return text     # 全部フィラーだったときは、消さずにそのまま出す
+    if removed:
+        log(f"フィラーを消しました（{len(removed)}箇所）: "
+            f"{'・'.join(dict.fromkeys(removed))}")
+    return result
+
+
 MIC_STATUS = {0: "未確定", 1: "制限あり", 2: "拒否", 3: "許可済み"}
 
 
@@ -532,6 +589,11 @@ def compress_for_upload(wav_path):
     return m4a, "audio/mp4", True
 
 
+def _finish(text, cfg):
+    """AIの出力を仕上げる。幻聴を捨て、フィラーを落とし、覚えさせた表記に直す。"""
+    return apply_corrections(strip_fillers(drop_hallucination(text), cfg), cfg)
+
+
 def transcribe_and_polish(wav_path, cfg):
     db, spread = audio_levels(wav_path)
     log(f"録音の音量: {db if db is None else f'{db:.1f}'}dB / "
@@ -541,7 +603,7 @@ def transcribe_and_polish(wav_path, cfg):
             f"（実測 {db:.1f}dB・起伏 {spread:.1f}dB / 基準 起伏{SPEECH_SPREAD_DB}dB）")
         raise SilentAudio(db, spread)
     if pick_provider(cfg) == "openai":
-        return apply_corrections(drop_hallucination(_via_openai(wav_path, cfg)), cfg)
+        return _finish(_via_openai(wav_path, cfg), cfg)
 
     models = [cfg["gemini_model"]] + list(cfg.get("gemini_fallback_models") or [])
     deadline = time.time() + TOTAL_DEADLINE
@@ -553,10 +615,10 @@ def transcribe_and_polish(wav_path, cfg):
             log("時間切れのため打ち切りました（音声は残します）")
             break
         try:
-            text = drop_hallucination(_via_gemini(wav_path, {**cfg, "gemini_model": model}))
+            text = _via_gemini(wav_path, {**cfg, "gemini_model": model})
             if model != models[0]:
                 log(f"{model} で成功しました")
-            return apply_corrections(text, cfg)
+            return _finish(text, cfg)
         except Exception as e:
             last = e
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
@@ -703,10 +765,96 @@ def _via_openai(wav_path, cfg):
 
 _paste_lock = threading.Lock()
 
+PASTE_SETTLE = 0.12       # クリップボードに置いてから⌘Vを送るまで
+PASTE_CONFIRM_SEC = 1.5   # 入力欄が変わったかを見張る上限
+PASTE_RESTORE_SEC = 1.8   # 貼れたと確認できないとき、元に戻すまで待つ時間
+PASTE_RESTORE_OK = 0.3    # 貼れたと確認できたときに待つ時間
+
+
+class PasteBlocked(Exception):
+    """貼り付けを実行できなかった。文章はクリップボードに残したままにする。"""
+
+
+def secure_input_enabled():
+    """パスワード欄などで「安全な入力」が働いていると、
+    合成した⌘Vはエラーも出さずに黙って捨てられる。"""
+    try:
+        carbon = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/Carbon.framework/Carbon")
+        carbon.IsSecureEventInputEnabled.restype = ctypes.c_bool
+        return bool(carbon.IsSecureEventInputEnabled())
+    except Exception as e:
+        log(f"「安全な入力」の状態を取れませんでした: {e}")
+        return False
+
+
+def frontmost_app():
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return app.localizedName() if app else "?"
+    except Exception:
+        return "?"
+
+
+def focused_text_length():
+    """カーソルがある入力欄の文字数。読めないときは None（＝確かめられない）。"""
+    try:
+        from ApplicationServices import (AXUIElementCreateSystemWide,
+                                         AXUIElementCopyAttributeValue)
+        system = AXUIElementCreateSystemWide()
+        err, focused = AXUIElementCopyAttributeValue(
+            system, "AXFocusedUIElement", None)
+        if err != 0 or focused is None:
+            return None
+        err, value = AXUIElementCopyAttributeValue(focused, "AXValue", None)
+        if err != 0 or not isinstance(value, str):
+            return None
+        return len(value)
+    except Exception:
+        return None
+
+
+def _wait_until_pasted(before):
+    """貼り付いたかを入力欄の文字数で確かめる。
+    True=貼れた / False=貼れていない / None=確かめられない（アプリが教えてくれない）"""
+    if before is None:
+        return None
+    end = time.time() + PASTE_CONFIRM_SEC
+    while time.time() < end:
+        time.sleep(0.1)
+        now = focused_text_length()
+        if now is None:
+            return None
+        if now != before:
+            return True
+    return False
+
+
+def _post_command_v():
+    """⌘Vを送る。Vのイベントに印を付けるだけだと、修飾キーの状態を自分で見るアプリ
+    （Electron製のエディタやチャットなど）に届かないことがあるので、
+    Commandの押し下げ・離しも本物どおりに送る。"""
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    cmd_down = Quartz.CGEventCreateKeyboardEvent(src, 55, True)   # 55 = Command
+    Quartz.CGEventSetType(cmd_down, Quartz.kCGEventFlagsChanged)
+    Quartz.CGEventSetFlags(cmd_down, Quartz.kCGEventFlagMaskCommand)
+    v_down = Quartz.CGEventCreateKeyboardEvent(src, 9, True)      # 9 = V
+    v_up = Quartz.CGEventCreateKeyboardEvent(src, 9, False)
+    Quartz.CGEventSetFlags(v_down, Quartz.kCGEventFlagMaskCommand)
+    Quartz.CGEventSetFlags(v_up, Quartz.kCGEventFlagMaskCommand)
+    cmd_up = Quartz.CGEventCreateKeyboardEvent(src, 55, False)
+    Quartz.CGEventSetType(cmd_up, Quartz.kCGEventFlagsChanged)
+    Quartz.CGEventSetFlags(cmd_up, 0)
+
+    for event in (cmd_down, v_down, v_up, cmd_up):
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+        time.sleep(0.01)
+
 
 def paste_text(text):
     """クリップボード経由でカーソル位置に貼る。元のクリップボードは戻す。
-    連続で貼ったときに前回の貼付文を「元の内容」と誤認しないよう、ロックで直列化する。"""
+    連続で貼ったときに前回の貼付文を「元の内容」と誤認しないよう、ロックで直列化する。
+    貼れなかったときは PasteBlocked を投げ、文章はクリップボードに残す。"""
     with _paste_lock:
         _paste_once(text)
 
@@ -720,22 +868,30 @@ def _paste_once(text):
         if data is not None:
             previous.append((t, data))
 
+    # 先にクリップボードへ入れておく。この後どこで止まっても⌘Vで貼れる状態にしておく
     pb.clearContents()
     pb.setString_forType_(text, NSStringPboardType)
     mine = pb.changeCount()
-    time.sleep(0.08)
 
-    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-    v_down = Quartz.CGEventCreateKeyboardEvent(src, 9, True)   # 9 = V
-    v_up = Quartz.CGEventCreateKeyboardEvent(src, 9, False)
-    Quartz.CGEventSetFlags(v_down, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventSetFlags(v_up, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, v_down)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, v_up)
+    if not Quartz.CGPreflightPostEventAccess():
+        raise PasteBlocked("アクセシビリティ（貼り付け）が許可されていません")
+    if secure_input_enabled():
+        raise PasteBlocked("パスワード欄などで「安全な入力」が働いています")
 
-    # 貼り付けが終わるまで待ってから戻す。この間ロックを持ったままにして、
-    # 次の貼り付けが「前回の貼付文」を元の内容と勘違いするのを防ぐ
-    time.sleep(0.6)
+    time.sleep(PASTE_SETTLE)
+    before = focused_text_length()
+    _post_command_v()
+    landed = _wait_until_pasted(before)
+    where = frontmost_app()
+    if landed is False:
+        raise PasteBlocked(f"「{where}」に貼り付けられませんでした")
+    log(f"貼り付け: {'届きました' if landed else '届いたかは確認できません'}（前面: {where}）")
+
+    # 貼り付け先が読み終える前にクリップボードを戻すと、何も貼られない。
+    # 確認できたときだけ短く、できなかったときは長めに待つ。
+    # この間ロックを持ったままにして、次の貼り付けが
+    # 「前回の貼付文」を元の内容と勘違いするのを防ぐ
+    time.sleep(PASTE_RESTORE_OK if landed else PASTE_RESTORE_SEC)
     if pb.changeCount() != mine:
         log("クリップボードが他で変わったので元に戻しません")
         return
@@ -839,8 +995,13 @@ _FULLSCREEN_AUX = 1 << 8
 class Indicator:
     """画面下に「アイコン＋文字」を点滅表示する。録音中=コーラル／整え中=青。"""
 
-    W, H = 133, 50      # アイコン＋文字が入る大きさ
+    H = 50
     ICON = 34
+    PAD = 8             # 枠の内側の余白
+    GAP = 7             # アイコンと文字のあいだ
+    FONT_SIZE = 13.5
+    LABELS = ("録音中", "整え中")
+    W = 133             # 実際の幅は文字幅を測って _build で決め直す
 
     def __init__(self):
         self.panel = None
@@ -855,12 +1016,37 @@ class Indicator:
         path = resource_path(filename)
         return NSImage.alloc().initWithContentsOfFile_(path) if path else None
 
-    def _build(self):
+    def _frame(self):
+        """いま使っている画面のまん中（下から150）に置く。"""
         screen = NSScreen.mainScreen().frame()
         x = screen.origin.x + (screen.size.width - self.W) / 2
         y = screen.origin.y + 150
+        return NSMakeRect(x, y, self.W, self.H)
+
+    def _label_width(self, font):
+        """文字が収まる幅を実測する。NSTextFieldは内側にも余白を持つので、
+        文字だけを測った値をそのまま使うと最後の1文字が欠ける。"""
+        probe = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 24))
+        probe.setBezeled_(False)
+        probe.setDrawsBackground_(False)
+        probe.setEditable_(False)
+        probe.setFont_(font)
+        widest = 0
+        for text in self.LABELS:
+            probe.setStringValue_(text)
+            probe.sizeToFit()
+            widest = max(widest, probe.frame().size.width)
+        # ぴったりの幅だと折り返しが起きて「録音中」の「中」が下に隠れる。少し余らせる
+        return math.ceil(widest) + 4
+
+    def _build(self):
+        font = NSFont.boldSystemFontOfSize_(self.FONT_SIZE)
+        # 幅を決め打ち（133）にすると、文字より広い分だけ中身が左に寄って見える。
+        # 枠そのものを中身の幅にして、画面のまん中に文字が来るようにする。
+        text_w = self._label_width(font)
+        self.W = self.PAD + self.ICON + self.GAP + text_w + self.PAD
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, self.W, self.H),
+            self._frame(),
             _BORDERLESS | _NONACTIVATING_PANEL, NSBackingStoreBuffered, False)
         panel.setLevel_(_STATUS_LEVEL)
         panel.setOpaque_(False)
@@ -875,19 +1061,21 @@ class Indicator:
         bg.layer().setBackgroundColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.965, 0.949, 0.97).CGColor())
 
-        pad = (self.H - self.ICON) / 2
         view = NSImageView.alloc().initWithFrame_(
-            NSMakeRect(pad, pad, self.ICON, self.ICON))
+            NSMakeRect(self.PAD, (self.H - self.ICON) / 2, self.ICON, self.ICON))
         view.setImageScaling_(3)  # ProportionallyUpOrDown
         bg.addSubview_(view)
 
         label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(pad + self.ICON + 7, self.H / 2 - 10, self.W - self.ICON - pad * 2 - 7, 20))
+            NSMakeRect(self.PAD + self.ICON + self.GAP, self.H / 2 - 10, text_w, 20))
         label.setBezeled_(False)
         label.setDrawsBackground_(False)
         label.setEditable_(False)
         label.setSelectable_(False)
-        label.setFont_(NSFont.boldSystemFontOfSize_(13.5))
+        label.setAlignment_(1)          # NSTextAlignmentCenter
+        label.setUsesSingleLineMode_(True)   # 折り返させない（折り返すと文字が欠ける）
+        label.cell().setWraps_(False)
+        label.setFont_(font)
         label.setTextColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(0.20, 0.18, 0.17, 1.0))
         bg.addSubview_(label)
@@ -902,6 +1090,11 @@ class Indicator:
     def _apply(self, alpha, blue):
         if self.panel is None:
             self._build()
+        # 画面の解像度や外部ディスプレイが変わっても、毎回まん中に置き直す
+        want = self._frame()
+        now = self.panel.frame()
+        if abs(now.origin.x - want.origin.x) > 0.5 or abs(now.origin.y - want.origin.y) > 0.5:
+            self.panel.setFrameOrigin_(want.origin)
         if self.mode != blue:
             img = self.img_work if blue else self.img_rec
             if img:
@@ -1199,11 +1392,21 @@ class KoeTypeApp(rumps.App):
             if text:
                 self.last_text = text
                 self._remember(text)
-                paste_text(text)
-                if self.cfg["sound_on_done"]:
-                    beep("Tink")
-                log(f"完了 {elapsed:.1f}秒 / {len(text)}文字")
-                self._set(self.last_item, f"直前: {len(text)}文字を貼りました")
+                try:
+                    paste_text(text)
+                    if self.cfg["sound_on_done"]:
+                        beep("Tink")
+                    log(f"完了 {elapsed:.1f}秒 / {len(text)}文字")
+                    self._set(self.last_item, f"直前: {len(text)}文字を貼りました")
+                except PasteBlocked as e:
+                    # 文章はクリップボードに残っている。黙って消えないよう必ず知らせる
+                    log(f"貼り付けできませんでした: {e}（文章はコピー済み・{len(text)}文字）")
+                    beep("Funk")
+                    self._set(self.last_item,
+                              f"直前: {len(text)}文字（⌘Vで貼ってください）")
+                    rumps.notification(
+                        APP_NAME, "貼り付けできませんでした",
+                        f"{e}。文章はコピーしてあるので、貼りたいところで ⌘V を押してください。")
             else:
                 keep = SUPPORT_DIR / "last_failed.wav"
                 try:
