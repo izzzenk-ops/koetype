@@ -112,7 +112,8 @@ AIが指示に従わなくても②で確実に直るので、一度覚えさせ
 |---|---|
 | `provider` | `auto`（既定）／`gemini`／`openai`。autoはGeminiキーがあればGemini、無ければOpenAI |
 | `gemini_api_key` | AI Studioの無料キー。**請求先に紐づいたプロジェクトで作ると前払いクレジット扱いになり429で弾かれる**。請求先なしの新規プロジェクトで作ること |
-| `gemini_model` | `gemini-3.1-flash-lite`（既定）。**2026-05-07に廃止告知済み・最短2027-05-07で停止**。後継は `gemini-3.5-flash-lite` |
+| `gemini_models_auto` | `true`（既定）。使うモデルの順番を、このリポジトリの `models.json` から読む（6時間ごとに取り直し・取れなければ前回の一覧→アプリ内の既定）。**モデルが古くなって遅くなったら `models.json` を直してpushするだけで全員が切り替わる**（アプリの入れ直し＝許可の取り直しが要らない）。`false` にすると下の2つを使う |
+| `gemini_model` | `gemini-flash-lite-latest`（既定）。Googleが常に最新のflash-liteを指す名前。`gemini_models_auto` が `false` のときだけ使う |
 | `gemini_fallback_models` | 枠が尽きたときに順に試すモデル。**無料枠はモデルごとに別**なので、これで使える回数が増える。**モデルは停止する**ので足す前に廃止予定表で存在を確かめる（ https://ai.google.dev/gemini-api/docs/deprecations ）。`gemini-3.1-flash-lite-preview` は2026-05-25に停止済みで、予備に入れていたため2026-09-10に外した |
 | `corrections` | 覚えさせた表記。メニューの「言葉を覚えさせる…」から編集する |
 | `hold_key_code` | 押しっぱなしにするキー。63=fn（既定）／61=右Option／58=左Option／54=右Command |

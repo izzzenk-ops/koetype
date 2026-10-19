@@ -97,14 +97,19 @@ KEY_FLAG = {
 DEFAULT_CONFIG = {
     "provider": "auto",
     "gemini_api_key": "",
-    "gemini_model": "gemini-3.1-flash-lite",
+    # true のあいだは、使うモデルの順番を配布リポジトリの models.json から読む。
+    # モデルが古くなって遅くなっても、models.json を直すだけで全員が切り替わる
+    # （アプリの入れ直し＝macOSの許可の取り直しが要らない）。
+    # false にすると下の gemini_model / gemini_fallback_models を使う。
+    "gemini_models_auto": True,
+    "gemini_model": "gemini-flash-lite-latest",
     # 無料枠はモデルごとに別。尽きたら順に回して使える回数を増やす。
     # モデルは廃止される。公式の廃止予定表で存在を確かめてから足すこと:
     # https://ai.google.dev/gemini-api/docs/deprecations
     "gemini_fallback_models": [
-        "gemini-3.5-flash-lite",     # 既定(3.1)の後継。3.1は2027-05-07に停止予定
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",     # 2027-05-07に停止予定
         "gemini-3-flash-preview",
-        "gemini-flash-latest",
     ],
     "openai_api_key_file": str(
         Path.home() / "Documents" / "Claude" / "Projects" / "tools" / "openai" / ".env"
@@ -607,19 +612,21 @@ def transcribe_and_polish(wav_path, cfg):
     if pick_provider(cfg) == "openai":
         return _finish(_via_openai(wav_path, cfg), cfg)
 
-    models = [cfg["gemini_model"]] + list(cfg.get("gemini_fallback_models") or [])
+    models = gemini_models(cfg)
     deadline = time.time() + TOTAL_DEADLINE
     now = time.time()
     usable = [m for m in models if _model_blocked_until.get(m, 0) <= now] or models
     last = None
-    for model in usable:
+    for i, model in enumerate(usable):
         if time.time() > deadline:
             log("時間切れのため打ち切りました（音声は残します）")
             break
         try:
-            text = _via_gemini(wav_path, {**cfg, "gemini_model": model})
-            if model != models[0]:
-                log(f"{model} で成功しました")
+            # 混雑(503)は同じモデルで待つより次のモデルに回すほうが速い。
+            # 待ってやり直すのは最後のモデルだけ
+            text = _via_gemini(wav_path, {**cfg, "gemini_model": model},
+                               retry=(i == len(usable) - 1))
+            log(f"{model} で成功しました")
             return _finish(text, cfg)
         except Exception as e:
             last = e
@@ -642,10 +649,70 @@ RETRY_WAITS = (2, 5)
 CONNECT_TIMEOUT = 10      # つながらないと判断するまで
 READ_TIMEOUT = 180        # 応答を待つ上限（10分の音声でも12秒程度）
 TOTAL_DEADLINE = 240      # 全モデル・全やり直しを合わせた締め切り
+QUICK_TIMEOUT = 12        # 予備が残っているときの待ち時間（＋音声の長さの半分）
 
 
-def _post_with_retry(send, label):
-    for attempt, wait in enumerate((0,) + RETRY_WAITS):
+def _seconds(wav_path):
+    try:
+        with wave.open(str(wav_path)) as w:
+            return w.getnframes() / float(w.getframerate())
+    except Exception:
+        return 0.0
+
+
+MODELS_URL = "https://raw.githubusercontent.com/izzzenk-ops/koetype/main/models.json"
+MODELS_CACHE = SUPPORT_DIR / "models.json"
+MODELS_REFRESH = 6 * 3600   # この間隔より古ければ取り直す
+_models_fetching = threading.Event()
+_models_tried_at = 0.0      # 取れなかったときに毎回取りに行かないため
+
+
+def _refresh_models():
+    """models.json を取り直してキャッシュに置く。失敗したら前のキャッシュのまま。"""
+    try:
+        r = requests.get(MODELS_URL, timeout=5)
+        models = r.json().get("gemini_models") if r.status_code == 200 else None
+        if models and all(isinstance(m, str) for m in models):
+            MODELS_CACHE.write_text(json.dumps({"gemini_models": models}, ensure_ascii=False))
+            log(f"モデル一覧を更新しました: {', '.join(models)}")
+        else:
+            log(f"モデル一覧を取れませんでした（{r.status_code}）。前の一覧を使います")
+    except Exception as e:
+        log(f"モデル一覧を取れませんでした: {str(e)[:80]}")
+    finally:
+        _models_fetching.clear()
+
+
+def gemini_models(cfg):
+    """使うGeminiモデルを順番に返す。古い一覧は裏で取り直す（録音は待たせない）。"""
+    own = [cfg["gemini_model"]] + list(cfg.get("gemini_fallback_models") or [])
+    if not cfg.get("gemini_models_auto", True):
+        return own
+    try:
+        age = time.time() - MODELS_CACHE.stat().st_mtime
+        cached = json.loads(MODELS_CACHE.read_text()).get("gemini_models") or []
+    except (OSError, ValueError):
+        age, cached = None, []
+    global _models_tried_at
+    stale = age is None or age > MODELS_REFRESH
+    if stale and time.time() - _models_tried_at > 1800 and not _models_fetching.is_set():
+        _models_tried_at = time.time()
+        _models_fetching.set()
+        threading.Thread(target=_refresh_models, daemon=True).start()
+    if cached:
+        return cached
+    return [DEFAULT_CONFIG["gemini_model"]] + DEFAULT_CONFIG["gemini_fallback_models"]
+
+
+# 新しいモデルは thinkingBudget を受け付けず thinkingLevel を使う（逆のモデルもある）。
+# 合わない書き方を送ると400で落ちるので、通った書き方をモデルごとに覚える
+THINKING_STYLES = ({"thinkingLevel": "minimal"}, {"thinkingBudget": 0})
+_thinking_style = {}
+
+
+def _post_with_retry(send, label, waits=RETRY_WAITS):
+    r = None   # 1回も届かなければ None を返す
+    for attempt, wait in enumerate((0,) + waits):
         if wait:
             log(f"{label}が混んでいます。{wait}秒待って{attempt}回目のやり直し")
             time.sleep(wait)
@@ -661,13 +728,15 @@ def _post_with_retry(send, label):
     return r
 
 
-def _via_gemini(wav_path, cfg):
+def _via_gemini(wav_path, cfg, retry=True):
     key = cfg.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")
     if not key:
         raise RuntimeError(
             "Gemini APIキーが未設定です。メニューの「設定ファイルを開く」から "
             "gemini_api_key を入れてください。"
         )
+    # 最後のモデル以外は長く待たない。遅いモデルを待つより次に回すほうが速い
+    read_timeout = READ_TIMEOUT if retry else QUICK_TIMEOUT + _seconds(wav_path) * 0.5
     send_path, mime, temporary = compress_for_upload(wav_path)
     audio = base64.b64encode(Path(send_path).read_bytes()).decode()
     if temporary:
@@ -676,21 +745,32 @@ def _via_gemini(wav_path, cfg):
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{cfg['gemini_model']}:generateContent"
     )
-    body = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": build_prompt(cfg)},
-                    {"inline_data": {"mime_type": mime, "data": audio}},
-                ]
-            }
-        ],
-        "generationConfig": {"temperature": 0.2, "thinkingConfig": {"thinkingBudget": 0}},
-    }
-    r = _post_with_retry(
-        lambda: requests.post(url, params={"key": key}, json=body,
-                              headers={"Content-Type": "application/json"}, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)),
-        "Gemini")
+    model = cfg["gemini_model"]
+    known = _thinking_style.get(model)
+    for style in ([known] if known else THINKING_STYLES):
+        body = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": build_prompt(cfg)},
+                        {"inline_data": {"mime_type": mime, "data": audio}},
+                    ]
+                }
+            ],
+            "generationConfig": {"temperature": 0.2, "thinkingConfig": style},
+        }
+        r = _post_with_retry(
+            lambda: requests.post(url, params={"key": key}, json=body,
+                                  headers={"Content-Type": "application/json"}, timeout=(CONNECT_TIMEOUT, read_timeout)),
+            f"Gemini({model})", RETRY_WAITS if retry else ())
+        if r is None:
+            raise RuntimeError(f"{model} に届きませんでした（時間切れ・通信エラー）")
+        if r.status_code == 400 and ("hinking" in r.text or "invalid argument" in r.text):
+            log(f"{model} は {style} を受け付けませんでした。書き方を変えます")
+            continue
+        if r.status_code == 200:
+            _thinking_style[model] = style
+        break
     if r.status_code != 200:
         raise RuntimeError(f"Gemini APIエラー {r.status_code}: {r.text[:300]}")
     data = r.json()
