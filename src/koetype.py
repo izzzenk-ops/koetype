@@ -482,7 +482,7 @@ def normalize_wav(path):
 # （実測 2026-09-25: 2分6秒・662文字に「えっと」「ま、」「うん」が大量に残った）。
 # 表記直し（apply_corrections）と同じ考えで、AIの気まぐれに任せず最後に必ず通す。
 DEFAULT_FILLERS = [
-    "え", "えっ", "えー", "えと", "えっと", "えーっと", "ええと", "えっとー",
+    "え", "えっ", "えー", "えと", "えっと", "えーと", "えーっと", "ええと", "えっとー",
     "あの", "あのー", "あのう", "あー",
     "ま", "まあ", "まぁ", "まー",
     "うん", "うんうん", "うーん", "うーむ", "ふーん",
@@ -493,6 +493,9 @@ DEFAULT_FILLERS = [
 # 「、」「。」「改行」で区切られた“かたまり”だけを見る。文の途中の語は触らない。
 _CHUNK = re.compile(r"([、。！？\n])")
 _TAIL_DASH = re.compile(r"[ー〜～]+$")
+# 次の語にくっついて出ても消してよい、意味を持ちえない語（「えーと確認を」→「確認を」）。
+# 「あの店」「まあまあ」「その件」「はい」のように意味がありうる語はここに入れない
+_LEADING = re.compile(r"^(?:えーっと|えっとー|えっと|えーと|あのー+|あのう|うーん)[、,\s　]*")
 
 
 def strip_fillers(text, cfg):
@@ -511,6 +514,12 @@ def strip_fillers(text, cfg):
         chunk = parts[i]
         sep = parts[i + 1] if i + 1 < len(parts) else ""
         core = chunk.strip(" \u3000")
+        if cfg.get("filler_words") is None:     # 自分で一覧を決めた人には足さない
+            head = _LEADING.match(core)
+            if head and core[head.end():]:
+                removed.append(head.group(0).strip("、, 　"))
+                core = core[head.end():]
+                chunk = core
         if core and (core in words or _TAIL_DASH.sub("", core) in words):
             removed.append(core)
             # 改行は段落の区切りなので残す。「、」「。」は語と一緒に捨てる
