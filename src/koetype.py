@@ -72,11 +72,13 @@ POLISH_PROMPT = """あなたは日本語の音声入力を清書する校正者�
 
 短い一言・単語だけでも、必ずそのまま整えて出力してください。
 「意味をなさない」「文脈が分からない」という理由で捨ててはいけません。
-本当に一言も聞き取れないときだけ、空文字を返してください。"""
+本当に一言も聞き取れないときだけ、空文字を返してください。
+音声が雑音だけ・無音・途切れていて聞き取れないときは、推測で文を作らず、空文字を返してください。"""
 
 VOCAB_HINT = """
 なお、次の語はこの人がよく使う固有名詞です。似た音が出てきたらこの表記に直してください:
-{words}"""
+{words}
+この一覧は表記を直すためだけのものです。音声で話していない語を一覧から足したり、一覧の語をつなげて文を作ったりしてはいけません。"""
 
 FIX_HINT = """
 また、次の表記ゆれは必ず右側に直してください:
@@ -374,6 +376,10 @@ HALLUCINATIONS = {
     "チャンネル登録お願いします", "チャンネル登録よろしくお願いします",
     "おわり", "終わり", "。", "ありがとうございました", "ありがとうございました。",
 }
+class AudioUnreadable(Exception):
+    """録れた音を読めなかった（形式が違う・壊れている）。AIに送ると話していない文を作られるので、送らずに止める。"""
+
+
 class SilentAudio(Exception):
     """録れた音に声が入っていなかった。マイクの選択ミスもここで気づける。"""
 
@@ -432,6 +438,44 @@ def audio_levels(path):
 
 def drop_hallucination(text):
     return "" if text.strip() in HALLUCINATIONS else text
+
+
+def made_from_vocabulary(text, cfg):
+    """清書AIが、聞き取れない音声の代わりに単語帳の語を並べて文を作ったかを見る。
+    実例（2026-10-19）: 単語帳の12語を、登録した順番どおりにつないだ75字の文が貼られた。
+    単語帳の語が5つ以上・登録順どおりに並び・本文の4割以上を占めるときだけ作り話とみなす。"""
+    words = [w for w in cfg.get("vocabulary", []) + list(cfg.get("corrections", {}).values()) if w]
+    body = re.sub(r"[\s、。，．,.!！?？「」]", "", text)
+    if not body:
+        return False
+    hits = [(body.find(w), w) for w in words if w in body]
+    if len(hits) < 5:
+        return False
+    order = [words.index(w) for _, w in sorted(hits)]
+    in_order = sum(1 for a, b in zip(order, order[1:]) if a < b) >= len(order) - 2
+    covered = sum(len(w) for _, w in hits) / len(body)
+    return in_order and covered >= 0.4
+
+
+def normalize_wav(path):
+    """録音を、いつもの形（16bit・16kHz・モノラル）にそろえる。
+    macOSの録音はまれに設定を無視して小数の形式（WAVE_FORMAT_EXTENSIBLE・float）で書き、
+    Pythonのwaveでは読めずに音量を測れなかった（2026-10-19）。afconvertで直す。
+    戻り値は (使うファイル, 一時ファイルか)。"""
+    try:
+        with wave.open(path) as w:
+            if w.getsampwidth() == 2 and w.getcomptype() == "NONE":
+                return path, False
+    except Exception:
+        pass
+    out = path.rsplit(".", 1)[0] + "_16.wav"
+    r = subprocess.run(["/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", path, out],
+                       capture_output=True)
+    if r.returncode != 0 or not os.path.exists(out):
+        log(f"録音の形をそろえられませんでした: {r.stderr[:120]!r}")
+        return path, False
+    log("録音の形をそろえました（16bit・16kHz）")
+    return out, True
 
 
 # 清書AIはたいていフィラーを消してくれるが、長い音声では素通しすることがある
@@ -599,14 +643,30 @@ def compress_for_upload(wav_path):
 
 def _finish(text, cfg):
     """AIの出力を仕上げる。幻聴を捨て、フィラーを落とし、覚えさせた表記に直す。"""
-    return apply_corrections(strip_fillers(drop_hallucination(text), cfg), cfg)
+    text = apply_corrections(strip_fillers(drop_hallucination(text), cfg), cfg)
+    if made_from_vocabulary(text, cfg):
+        log(f"単語帳の語を並べた作り話なので捨てました: {text[:60]}")
+        raise AudioUnreadable("聞き取れない音声から、話していない文が作られました")
+    return text
 
 
 def transcribe_and_polish(wav_path, cfg):
+    wav_path, temp = normalize_wav(wav_path)
+    try:
+        return _transcribe_and_polish(wav_path, cfg)
+    finally:
+        if temp:
+            _unlink(wav_path)
+
+
+def _transcribe_and_polish(wav_path, cfg):
     db, spread = audio_levels(wav_path)
     log(f"録音の音量: {db if db is None else f'{db:.1f}'}dB / "
         f"起伏: {spread if spread is None else f'{spread:.1f}'}dB")
-    if db is not None and (db < SILENCE_DB or spread < SPEECH_SPREAD_DB):
+    if db is None:
+        log("音量を測れない録音なので送信しませんでした（送ると話していない文を作られる）")
+        raise AudioUnreadable("録音を読めませんでした")
+    if db < SILENCE_DB or spread < SPEECH_SPREAD_DB:
         log(f"声が入っていないので送信しませんでした"
             f"（実測 {db:.1f}dB・起伏 {spread:.1f}dB / 基準 起伏{SPEECH_SPREAD_DB}dB）")
         raise SilentAudio(db, spread)
@@ -1507,13 +1567,31 @@ class KoeTypeApp(rumps.App):
                 except OSError as e:
                     log(f"音声を残せませんでした: {e}")
                 self._set(self.last_item, "直前: 聞き取れませんでした")
+                beep("Funk")
+                rumps.notification(APP_NAME, "聞き取れませんでした",
+                                   "もう一度話してください。何も貼っていません。")
+        except AudioUnreadable as e:
+            keep = SUPPORT_DIR / "last_failed.wav"
+            try:
+                if Path(wav) != keep:
+                    shutil.copy(wav, keep)
+                self.pending = str(keep)
+                self.retry_item.set_callback(self.retry_last)
+                self._set(self.retry_item, "失敗した録音をやり直す")
+            except OSError as ce:
+                log(f"音声を残せませんでした: {ce}")
+            self._set(self.last_item, "直前: 音声が取れませんでした")
+            beep("Funk")
+            rumps.notification(APP_NAME, "音声がうまく取れませんでした",
+                               f"もう一度話してください。何も貼っていません。（{e}）")
         except SilentAudio as e:
             mic = getattr(self.recorder, "device_label", "?")
             self._set(self.last_item,
                       f"直前: 声が入っていませんでした（起伏{e.spread:.0f}dB / {mic}）")
+            beep("Funk")
             rumps.notification(
                 APP_NAME, "声が入っていませんでした",
-                f"何も貼っていません。話していれば、マイク「{mic}」が違う可能性があります"
+                f"もう一度話してください。何も貼っていません。話していれば、マイク「{mic}」が違う可能性があります"
                 f"（{e.db:.0f}dB・起伏{e.spread:.0f}dB）。"
                 f"メニューの「マイクを本体に固定」を試してください。")
         except Exception as e:
