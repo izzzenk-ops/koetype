@@ -106,8 +106,9 @@ DEFAULT_CONFIG = {
     # 無料枠はモデルごとに別。尽きたら順に回して使える回数を増やす。
     # モデルは廃止される。公式の廃止予定表で存在を確かめてから足すこと:
     # https://ai.google.dev/gemini-api/docs/deprecations
+    # 予備に3.5-flash-liteを入れない。2026-10時点で latest の中身が3.5なので、
+    # 混雑で見切った直後に同じモデルへ当たってしまう
     "gemini_fallback_models": [
-        "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",     # 2027-05-07に停止予定
         "gemini-3-flash-preview",
     ],
@@ -671,8 +672,9 @@ def _refresh_models():
     """models.json を取り直してキャッシュに置く。失敗したら前のキャッシュのまま。"""
     try:
         r = requests.get(MODELS_URL, timeout=5)
-        models = r.json().get("gemini_models") if r.status_code == 200 else None
-        if models and all(isinstance(m, str) for m in models):
+        data = r.json() if r.status_code == 200 else None
+        models = data.get("gemini_models") if isinstance(data, dict) else None
+        if isinstance(models, list) and models and all(isinstance(m, str) for m in models):
             MODELS_CACHE.write_text(json.dumps({"gemini_models": models}, ensure_ascii=False))
             log(f"モデル一覧を更新しました: {', '.join(models)}")
         else:
@@ -691,17 +693,20 @@ def gemini_models(cfg):
     try:
         age = time.time() - MODELS_CACHE.stat().st_mtime
         cached = json.loads(MODELS_CACHE.read_text()).get("gemini_models") or []
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         age, cached = None, []
+    if not isinstance(cached, list):
+        cached = []
+    cached = [m for m in cached if isinstance(m, str)]
     global _models_tried_at
     stale = age is None or age > MODELS_REFRESH
     if stale and time.time() - _models_tried_at > 1800 and not _models_fetching.is_set():
         _models_tried_at = time.time()
         _models_fetching.set()
         threading.Thread(target=_refresh_models, daemon=True).start()
-    if cached:
-        return cached
-    return [DEFAULT_CONFIG["gemini_model"]] + DEFAULT_CONFIG["gemini_fallback_models"]
+    builtin = [DEFAULT_CONFIG["gemini_model"]] + DEFAULT_CONFIG["gemini_fallback_models"]
+    # 一覧に書き間違い（存在しないモデル名）があっても止まらないよう、内蔵の一覧を後ろに続ける
+    return list(dict.fromkeys(cached + builtin))
 
 
 # 新しいモデルは thinkingBudget を受け付けず thinkingLevel を使う（逆のモデルもある）。
@@ -736,7 +741,8 @@ def _via_gemini(wav_path, cfg, retry=True):
             "gemini_api_key を入れてください。"
         )
     # 最後のモデル以外は長く待たない。遅いモデルを待つより次に回すほうが速い
-    read_timeout = READ_TIMEOUT if retry else QUICK_TIMEOUT + _seconds(wav_path) * 0.5
+    read_timeout = (READ_TIMEOUT if retry
+                    else min(READ_TIMEOUT, QUICK_TIMEOUT + _seconds(wav_path) * 0.5))
     send_path, mime, temporary = compress_for_upload(wav_path)
     audio = base64.b64encode(Path(send_path).read_bytes()).decode()
     if temporary:
